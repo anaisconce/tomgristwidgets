@@ -140,12 +140,29 @@ async function gristRecordSelected(record, mappedColNamesToRealColNames) {
     currentData.data = mappedRecord[DATA_COL_NAME];
     console.log(`docxtemplater: Input placeholder data is of type '${typeof currentData.data}' and looks like this:`, currentData.data);
     if (typeof currentData.data !== "object") {
-      let msg = `<b>Can't read placeholder data.</b><br />The data needs to be a dictionary but seems to be a '${typeof currentData.data}'. Make sure the column holding said data is set to type 'Any'.`;
+      let msg = `<b>Can't read placeholder data.</b><br />The data needs to be a dictionary (or a list of dictionaries) but seems to be a '${typeof currentData.data}'. Make sure the column holding said data is set to type 'Any'.`;
       console.error(`docxtemplater: ${msg}`);
       throw new Error(msg);
     }
-    if (!("constructor" in currentData.data) || currentData.data.constructor != Object) {
-      let msg = `Supplied data is not a dictionary: '${currentData.data}'`;
+    // MODIFIED: Accept both a single dictionary and a list (array) of dictionaries.
+    // If it's a list, each entry will generate a separate document.
+    if (Array.isArray(currentData.data)) {
+      // Validate that every item in the list is a dictionary.
+      for (let i = 0; i < currentData.data.length; i++) {
+        if (typeof currentData.data[i] !== "object" || Array.isArray(currentData.data[i]) || currentData.data[i] === null) {
+          let msg = `<b>Item ${i + 1} in the placeholder data list is not a dictionary.</b>`;
+          console.error(`docxtemplater: ${msg}`);
+          throw new Error(msg);
+        }
+      }
+      if (currentData.data.length === 0) {
+        let msg = `<b>The placeholder data list is empty.</b>`;
+        console.error(`docxtemplater: ${msg}`);
+        throw new Error(msg);
+      }
+      console.log(`docxtemplater: Received a list of ${currentData.data.length} placeholder mappings. Will generate ${currentData.data.length} document(s).`);
+    } else if (!("constructor" in currentData.data) || currentData.data.constructor != Object) {
+      let msg = `Supplied data is not a dictionary (or list of dictionaries): '${currentData.data}'`;
       console.error(`docxtemplater: ${msg}`);
       throw new Error(msg);
     }
@@ -169,12 +186,17 @@ async function gristRecordSelected(record, mappedColNamesToRealColNames) {
     console.log(`docxtemplater: Output file name set to: '${currentData.outputFileName}'`);
     // Now we have all the data nicely validated and present in currentData,
     // all that's left to do is to display a ready message and the 'process' button.
-    setStatusMessage("Ready. Click 'Process' to generate the document.");
+    if (Array.isArray(currentData.data) && currentData.data.length > 1) {
+      setStatusMessage(`Ready. Click 'Process' to generate ${currentData.data.length} documents (one per owner).`);
+    } else {
+      setStatusMessage("Ready. Click 'Process' to generate the document.");
+    }
   } catch (err) {
     return handleError(err);
   }
 }
 
+// Original single-file processing function (kept for backward compatibility).
 function processFile(url, data, outputFileName) {
   try {
     if (!url || !data || !outputFileName) {
@@ -283,6 +305,142 @@ function processFile(url, data, outputFileName) {
   }
 }
 
+// NEW: Process multiple documents from a list of placeholder mappings.
+// Fetches the template once, then renders a separate document for each mapping.
+function processMultipleFiles(url, dataList, baseOutputFileName) {
+  try {
+    if (!url || !dataList || !baseOutputFileName) {
+      let msg = "Any of the arguments 'url', 'dataList', 'baseOutputFileName' seems to be missing/falsy.";
+      console.error(`docxtemplater: ${msg}`);
+      throw new Error(msg);
+    }
+    setStatusMessage(`Generating ${dataList.length} document(s)...`);
+    // Fetch the template binary content ONCE.
+    return PizZipUtils.getBinaryContent(url, async function(err, content) {
+      if (err) {
+        let msg = `${err.name} in PizZipUtils.getBinaryContent: ${err.message}`;
+        console.error(`docxtemplater: ${msg}`);
+        throw new Error(msg);
+      }
+      try {
+        // Build the base filename parts (strip .docx extension for numbering).
+        let baseName = baseOutputFileName;
+        let ext = ".docx";
+        if (baseName.toLowerCase().endsWith(".docx")) {
+          baseName = baseName.slice(0, -5);
+        }
+
+        for (let i = 0; i < dataList.length; i++) {
+          const data = dataList[i];
+          // Build a unique output filename for each document.
+          // If there's an OwnerName in the data, use that; otherwise use a number.
+          let suffix;
+          if (data.OwnerName && String(data.OwnerName).trim()) {
+            // Sanitize the owner name for use in a filename.
+            suffix = String(data.OwnerName).trim().replace(/[<>:"/\\|?*]/g, "_");
+          } else {
+            suffix = String(i + 1);
+          }
+          let outputFileName;
+          if (dataList.length === 1) {
+            outputFileName = baseName + ext;
+          } else {
+            outputFileName = `${baseName}_${suffix}${ext}`;
+          }
+
+          setStatusMessage(`Generating document ${i + 1} of ${dataList.length}...`);
+
+          const docxtemplaterOptions = {
+            paragraphLoop: true,
+            linebreaks: true,
+            delimiters: { start: currentData.delimiterStart, end: currentData.delimiterEnd },
+            nullGetter: function(part, scope) {
+              if (!part.module) {
+                if ("value" in part) {
+                  return `${currentData.delimiterStart}${part.value}${currentData.delimiterEnd}`;
+                }
+                return "";
+              }
+              if (part.module === "rawxml") {
+                return "";
+              }
+              return "";
+            },
+          };
+          if (currentData.useAngular) {
+            docxtemplaterOptions.parser = AngularExpressionsParser;
+          }
+          if (currentData.useImageModule) {
+            docxtemplaterOptions.modules = [new ImageModule({
+              centered: false,
+              getImage: async function(imgAttachmentIdOrUrl, tagName) {
+                console.log("docxtemplater: getImage! imgAttachmentIdOrUrl, tagName:", imgAttachmentIdOrUrl, tagName);
+                let imgUrl = await getGristImageAttachmentURL(imgAttachmentIdOrUrl);
+                return new Promise(function(resolve, reject) {
+                  PizZipUtils.getBinaryContent(imgUrl, function(err, imgContent) {
+                    if (err) {
+                      let msg = `${err.name} in PizZipUtils.getBinaryContent: ${err.message}`;
+                      console.warn(`docxtemplater: Couldn't load image: ${msg}`);
+                      return reject(err);
+                    }
+                    return resolve(imgContent);
+                  });
+                });
+              },
+              getSize: async function(image, imgAttachmentIdOrUrl, tagName) {
+                console.log("docxtemplater: getSize! imgAttachmentIdOrUrl, image, tagName:", imgAttachmentIdOrUrl, image, tagName);
+                let imgUrl = await getGristImageAttachmentURL(imgAttachmentIdOrUrl);
+                return new Promise(function(resolve, reject) {
+                  const img = new Image();
+                  img.src = imgUrl;
+                  img.onload = function() {
+                    return resolve([img.width, img.height]);
+                  };
+                  img.onerror = function(e) {
+                    console.warn(`docxtemplater: Couldn't fetch image from '${imgUrl}' for placeholder '${tagName}'.`);
+                    return reject(e);
+                  };
+                });
+              },
+            })];
+          }
+
+          let templater = null;
+          try {
+            // Each iteration needs a fresh PizZip from the same content buffer.
+            templater = new window.docxtemplater(new PizZip(content), docxtemplaterOptions);
+          } catch (docxtemplaterError) {
+            return handleDocxtemplaterError(docxtemplaterError);
+          }
+
+          try {
+            await templater.renderAsync(data);
+            saveAs(templater.getZip().generate({
+              type: "blob",
+              mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+              compression: "DEFLATE",
+            }), outputFileName);
+            console.log(`docxtemplater: Generated document '${outputFileName}'.`);
+          } catch (docxtemplaterError) {
+            return handleDocxtemplaterError(docxtemplaterError);
+          }
+
+          // Small delay between downloads so the browser doesn't block them.
+          if (i < dataList.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, 750));
+          }
+        }
+
+        setStatusMessage(`Done! ${dataList.length} document(s) generated.`);
+      } catch (e) {
+        return handleError(e);
+      }
+    });
+  } catch (err) {
+    return handleError(err);
+  }
+}
+
 
 
 
@@ -298,8 +456,8 @@ ready(function(){
     requiredAccess: "full",
     columns: [
       { name: ATTACHMENTID_COL_NAME, type: "Int", title: "Attachment ID", description: "ID number of a Grist attachment." },
-      { name: DATA_COL_NAME, type: "Any", strictType: true, title: "Placeholder Data", description: "Must be a dictionary of the form {placeholder_name: value_to_replace_by}" },
-      { name: FILENAME_COL_NAME, type: "Text,Choice", title: "Output File Name", description: "Name of the resulting file that will be offered for download. Should include the '.docx' extension." },
+      { name: DATA_COL_NAME, type: "Any", strictType: true, title: "Placeholder Data", description: "Must be a dictionary of the form {placeholder_name: value_to_replace_by}, or a list of such dictionaries (one document will be generated per entry)." },
+      { name: FILENAME_COL_NAME, type: "Text,Choice", title: "Output File Name", description: "Name of the resulting file that will be offered for download. Should include the '.docx' extension. When multiple documents are generated, the owner name or a number will be appended." },
       { name: USEANGULAR_COL_NAME, type: "Bool", optional: true, title: "Use Angular Parser?", description: "Whether to use the Angular expressions parser or not. The default is 'true'." },
       { name: USEIMAGEMODULE_COL_NAME, type: "Bool", optional: true, title: "Use Image Module?", description: "Whether to use the image module (allows insertion of images from Grist attachments) or not. The default is 'true'." },
       { name: DELIMITERSTART_COL_NAME, type: "Text,Choice", optional: true, title: "Custom Delimiter: Start", description: "Custom delimiter to use for the start of placeholders. The default is '{'." },
@@ -308,10 +466,16 @@ ready(function(){
   });
   // Register callback for when the user selects a record in Grist.
   grist.onRecord(gristRecordSelected);
-  // Add actions to our buttons.
+  // MODIFIED: The process button now checks whether data is a list (multiple docs) or a single dict.
   document.querySelector("#button_process").addEventListener("click", function(){
     setStatusMessage("Working...");
-    processFile(currentData.url, currentData.data, currentData.outputFileName);
+    if (Array.isArray(currentData.data)) {
+      // Multiple mappings: generate one document per entry.
+      processMultipleFiles(currentData.url, currentData.data, currentData.outputFileName);
+    } else {
+      // Single mapping: original behavior.
+      processFile(currentData.url, currentData.data, currentData.outputFileName);
+    }
   });
   document.querySelector("#button_status_reset").addEventListener("click", function(){
     resetStatusMessage();
