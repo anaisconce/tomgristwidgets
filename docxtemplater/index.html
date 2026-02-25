@@ -118,12 +118,18 @@
 
       /* Summary */
       .summary-row {
-        display: flex;
-        justify-content: space-between;
         padding: 4px 0;
         font-size: 13px;
+        line-height: 1.4;
       }
       .summary-row strong { color: #16b378; }
+      .summary-label { font-weight: 500; }
+      #selected-cases-list {
+        color: #555;
+        font-size: 12px;
+        margin-top: 2px;
+        word-wrap: break-word;
+      }
 
       /* Process button */
       #process-btn {
@@ -215,12 +221,11 @@
       <div class="step-header">3. Generate</div>
       <div class="step-body">
         <div class="summary-row">
-          <span>Cases selected:</span>
-          <strong id="selected-count">0</strong>
+          <span class="summary-label">Cases selected (<strong id="selected-count">0</strong>):</span>
+          <div id="selected-cases-list">None</div>
         </div>
         <div class="summary-row">
-          <span>Letters to generate:</span>
-          <strong id="letter-count">0</strong>
+          <span class="summary-label">Letters to generate: <strong id="letter-count">0</strong></span>
         </div>
         <button id="process-btn" disabled>Process</button>
         <div class="progress-bar hidden" id="progress-bar">
