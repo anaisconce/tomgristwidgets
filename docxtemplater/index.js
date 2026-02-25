@@ -297,12 +297,25 @@ function selectNone() {
 
 function updateSummary() {
   let totalLetters = 0;
+  const selectedCaseNumbers = [];
+
   for (const vid of state.selectedVehicleIds) {
+    const vehicle = state.vehicles.find(v => v.id === vid);
+    if (vehicle) selectedCaseNumbers.push(String(vehicle.Case || ''));
     const owners = state.ownersByVehicle[vid] || [];
     totalLetters += Math.max(owners.length, 1); // at least 1 letter even if 0 owners
   }
+
+  // Sort case numbers in natural alphanumeric order.
+  selectedCaseNumbers.sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+
   document.getElementById('selected-count').textContent = state.selectedVehicleIds.size;
   document.getElementById('letter-count').textContent = totalLetters;
+
+  const caseListEl = document.getElementById('selected-cases-list');
+  caseListEl.textContent = selectedCaseNumbers.length > 0
+    ? selectedCaseNumbers.join(', ')
+    : 'None';
 
   document.getElementById('process-btn').disabled =
     !state.templateUrl || state.selectedVehicleIds.size === 0;
