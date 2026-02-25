@@ -64,6 +64,7 @@ const state = {
   owners: [],             // Array of owner row objects
   ownersByVehicle: {},    // { vehicleId: [owner, owner, ...] }
   selectedVehicleIds: new Set(),
+  vehicleById: {},        // { vehicleId: vehicle row object } for fast lookup
   gristAccessToken: null,
 };
 
@@ -300,7 +301,7 @@ function updateSummary() {
   const selectedCaseNumbers = [];
 
   for (const vid of state.selectedVehicleIds) {
-    const vehicle = state.vehicles.find(v => v.id === vid);
+    const vehicle = state.vehicleById[vid];
     if (vehicle) selectedCaseNumbers.push(String(vehicle.Case || ''));
     const owners = state.ownersByVehicle[vid] || [];
     totalLetters += Math.max(owners.length, 1); // at least 1 letter even if 0 owners
@@ -375,6 +376,12 @@ async function loadData() {
 
     // Sort vehicles by Case number.
     state.vehicles.sort((a, b) => String(a.Case || '').localeCompare(String(b.Case || '')));
+
+    // Build a fast lookup map: vehicleId → vehicle object.
+    state.vehicleById = {};
+    for (const v of state.vehicles) {
+      state.vehicleById[v.id] = v;
+    }
 
     // Index owners by their vehicle reference (Vehicle_Owners.Case is a reference → vehicle row ID).
     state.ownersByVehicle = {};
@@ -516,7 +523,7 @@ async function processAll() {
     // ---- Step 2: Build placeholder mappings for every selected case + owner. ----
     const allMappings = [];
     for (const vid of state.selectedVehicleIds) {
-      const vehicle = state.vehicles.find(v => v.id === vid);
+      const vehicle = state.vehicleById[vid];
       if (!vehicle) continue;
 
       const owners = state.ownersByVehicle[vid] || [];
